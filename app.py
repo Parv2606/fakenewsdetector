@@ -25,34 +25,34 @@ st.markdown("Analyze articles, assess credibility, and summarize them to prevent
 
 # Initialize session state (non-ML)
 if "history" not in st.session_state:
-	st.session_state["history"] = []
+    st.session_state["history"] = []
 if "analysis_count" not in st.session_state:
-	st.session_state["analysis_count"] = 0
+    st.session_state["analysis_count"] = 0
 if "last_submit_ts" not in st.session_state:
-	st.session_state["last_submit_ts"] = None
+    st.session_state["last_submit_ts"] = None
 if "last_input_hash" not in st.session_state:
-	st.session_state["last_input_hash"] = None
+    st.session_state["last_input_hash"] = None
 if "cooldown_seconds" not in st.session_state:
-	st.session_state["cooldown_seconds"] = 3
+    st.session_state["cooldown_seconds"] = 3
 
 # Sidebar: app info and status (non-ML)
 with st.sidebar:
-	st.header("About")
-	st.write("This app analyzes news articles for credibility and provides a concise summary.")
-	status_ok = summarizer is not None and detector is not None
-	if status_ok:
-		st.success("Models loaded")
-	else:
-		st.warning("Models unavailable")
-	st.markdown("---")
-	st.subheader("Session Stats")
-	st.metric("Analyses this session", st.session_state["analysis_count"])
-	if len(st.session_state["history"]) > 0:
-		st.caption(f"Last result at {st.session_state['history'][-1]['timestamp']}")
-	st.markdown("---")
-	st.subheader("Settings")
-	max_len = st.slider("Max input length (chars)", min_value=500, max_value=10000, value=5000, step=500)
-	st.caption(f"Cooldown between analyses: {st.session_state['cooldown_seconds']}s")
+    st.header("About")
+    st.write("This app analyzes news articles for credibility and provides a concise summary.")
+    status_ok = summarizer is not None and detector is not None
+    if status_ok:
+        st.success("Models loaded")
+    else:
+        st.warning("Models unavailable")
+    st.markdown("---")
+    st.subheader("Session Stats")
+    st.metric("Analyses this session", st.session_state["analysis_count"])
+    if len(st.session_state["history"]) > 0:
+        st.caption(f"Last result at {st.session_state['history'][-1]['timestamp']}")
+    st.markdown("---")
+    st.subheader("Settings")
+    max_len = st.slider("Max input length (chars)", min_value=500, max_value=10000, value=5000, step=500)
+    st.caption(f"Cooldown between analyses: {st.session_state['cooldown_seconds']}s")
 
 # Main input with live counter
 article = st.text_area("Paste a news article or paragraph:", key="article_input", height=200)
@@ -65,32 +65,32 @@ run_clicked = col_run.button("Analyze Article")
 clear_clicked = col_clear.button("Clear Input")
 
 if clear_clicked:
-	st.session_state["article_input"] = ""
-	st.info("Input cleared.")
+    st.session_state["article_input"] = ""
+    st.info("Input cleared.")
 
 if run_clicked:
     if article.strip() == "":
         st.warning("Please enter some text.")
-	elif len(article) > max_len:
-		st.warning("Text too long. Please shorten and try again.")
+    elif len(article) > max_len:
+        st.warning("Text too long. Please shorten and try again.")
     elif summarizer is None or detector is None:
         st.error("Model not loaded. Please refresh the page and try again.")
     else:
-		# Duplicate submission prevention and cooldown
-		import hashlib, time
-		text_hash = hashlib.sha256(article.encode("utf-8")).hexdigest()
-		now = time.time()
-		if st.session_state["last_input_hash"] == text_hash:
-			st.info("You already analyzed this exact text.")
-			cooldown_left = 0
-			if st.session_state["last_submit_ts"] is not None:
-				elapsed = now - st.session_state["last_submit_ts"]
-				cooldown_left = max(0, st.session_state["cooldown_seconds"] - int(elapsed))
-			if cooldown_left > 0:
-				st.caption(f"Please wait {cooldown_left}s before re-analyzing.")
-			# Proceed anyway to allow re-run; message above informs the user.
-		st.session_state["last_input_hash"] = text_hash
-		st.session_state["last_submit_ts"] = now
+        # Duplicate submission prevention and cooldown
+        import hashlib, time
+        text_hash = hashlib.sha256(article.encode("utf-8")).hexdigest()
+        now = time.time()
+        if st.session_state["last_input_hash"] == text_hash:
+            st.info("You already analyzed this exact text.")
+            cooldown_left = 0
+            if st.session_state["last_submit_ts"] is not None:
+                elapsed = now - st.session_state["last_submit_ts"]
+                cooldown_left = max(0, st.session_state["cooldown_seconds"] - int(elapsed))
+            if cooldown_left > 0:
+                st.caption(f"Please wait {cooldown_left}s before re-analyzing.")
+            # Proceed anyway to allow re-run; message above informs the user.
+        st.session_state["last_input_hash"] = text_hash
+        st.session_state["last_submit_ts"] = now
         with st.spinner("Analyzing..."):
             # Summarize
             summary = summarizer(article, max_length=120, min_length=30, do_sample=False)[0]['summary_text']
