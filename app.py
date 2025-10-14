@@ -154,7 +154,7 @@ if run_clicked:
 
         # Save to history
         st.session_state["history"].append(result_payload)
-		st.session_state["analysis_count"] += 1
+		# st.session_state["analysis_count"] += 1
 
         # Download current result (JSON)
         st.download_button(
