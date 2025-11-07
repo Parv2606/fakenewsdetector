@@ -1,5 +1,6 @@
 import streamlit as st
 from transformers import pipeline
+import torch
 import json
 from io import StringIO
 import csv
@@ -7,137 +8,131 @@ from datetime import datetime
 
 st.set_page_config(page_title="Fake News Detector", page_icon="📰")
 
-@st.cache_resource
+# ---------- Helpers ----------
+def get_device():
+    # Use GPU if available; otherwise CPU
+    return 0 if torch.cuda.is_available() else -1
+
+@st.cache_resource(show_spinner=False)
 def load_models():
     try:
-        summarizer = pipeline("summarization", model="sshleifer/distilbart-cnn-12-6")
-        detector = pipeline("text-classification", model="mrm8488/bert-tiny-finetuned-fake-news-detection")
+        # Summarizer (fast + reliable)
+        summarizer = pipeline(
+            "summarization",
+            model="sshleifer/distilbart-cnn-12-6",
+            device=get_device()
+        )
+
+        # Stronger fake-news model (full BERT)
+        detector = pipeline(
+            "text-classification",
+            model="taltech-cs/fake-news-detection-bert",
+            return_all_scores=True,
+            truncation=True,
+            device=get_device()
+        )
         return summarizer, detector
     except Exception as e:
-        st.error("⚠️ Model loading failed. Please try again later.")
+        st.error("⚠️ Model loading failed. Check your internet or try again.")
         st.write(e)
         return None, None
 
+def word_chunks(text: str, max_words: int = 180):
+    """
+    Split long text into ~max_words chunks.
+    Keeps punctuation reasonably intact without extra libraries.
+    """
+    words = text.split()
+    for i in range(0, len(words), max_words):
+        yield " ".join(words[i:i + max_words])
+
+def analyze_article_in_chunks(text: str, detector, max_words_per_chunk: int = 180):
+    """
+    Run the detector on multiple chunks and aggregate scores.
+    Returns (label, confidence, {"FAKE": total, "REAL": total}, chunk_count)
+    """
+    scores = {"FAKE": 0.0, "REAL": 0.0}
+    chunk_count = 0
+
+    for chunk in word_chunks(text, max_words=max_words_per_chunk):
+        # Each call returns list with one element (the sample), which is list of scores per label
+        result = detector(chunk)[0]
+        # Normalize labels and accumulate
+        for item in result:
+            label = str(item["label"]).upper()
+            score = float(item["score"])
+            if "FAKE" in label:
+                scores["FAKE"] += score
+            elif "REAL" in label or "TRUE" in label:
+                scores["REAL"] += score
+        chunk_count += 1
+
+    if scores["FAKE"] >= scores["REAL"]:
+        final_label = "FAKE"
+        confidence = scores["FAKE"] / (scores["FAKE"] + scores["REAL"] + 1e-9)
+    else:
+        final_label = "REAL"
+        confidence = scores["REAL"] / (scores["FAKE"] + scores["REAL"] + 1e-9)
+
+    return final_label, confidence, scores, chunk_count
+
+
+# ---------- Load models ----------
 summarizer, detector = load_models()
 
+# ---------- UI ----------
 st.title("📰 Fake News Detector for Students")
 st.markdown("Analyze articles, assess credibility, and summarize them to prevent misinformation.")
 
-# Initialize session state (non-ML)
+# Initialize history
 if "history" not in st.session_state:
     st.session_state["history"] = []
-if "analysis_count" not in st.session_state:
-    st.session_state["analysis_count"] = 0
-if "last_submit_ts" not in st.session_state:
-    st.session_state["last_submit_ts"] = None
-if "last_input_hash" not in st.session_state:
-    st.session_state["last_input_hash"] = None
-if "cooldown_seconds" not in st.session_state:
-    st.session_state["cooldown_seconds"] = 3
 
-# Sidebar: app info and status (non-ML)
-with st.sidebar:
-    st.header("About")
-    st.write("This app analyzes news articles for credibility and provides a concise summary.")
-    status_ok = summarizer is not None and detector is not None
-    if status_ok:
-        st.success("Models loaded")
-    else:
-        st.warning("Models unavailable")
-    st.markdown("---")
-    st.subheader("Session Stats")
-    st.metric("Analyses this session", st.session_state["analysis_count"])
-    if len(st.session_state["history"]) > 0:
-        st.caption(f"Last result at {st.session_state['history'][-1]['timestamp']}")
-    st.markdown("---")
-    st.subheader("Settings")
-    max_len = st.slider("Max input length (chars)", min_value=500, max_value=10000, value=5000, step=500)
-    st.caption(f"Cooldown between analyses: {st.session_state['cooldown_seconds']}s")
+article = st.text_area("Paste a news article or paragraph:", height=220)
 
-# Main input with live counter
-article = st.text_area("Paste a news article or paragraph:", key="article_input", height=200)
-st.caption(f"Characters: {len(article)} / {max_len}")
-if len(article) > max_len:
-	st.warning("Input exceeds the maximum length. Please shorten the text.")
+# Controls
+colA, colB = st.columns(2)
+with colA:
+    use_summary_for_detection = st.checkbox("Detect on summary instead of full article", value=False)
+with colB:
+    chunk_words = st.slider("Words per chunk (for full article detection)", 120, 240, 180, 10)
 
-col_run, col_clear = st.columns([3,1])
-run_clicked = col_run.button("Analyze Article")
-clear_clicked = col_clear.button("Clear Input")
-
-if clear_clicked:
-    st.session_state["article_input"] = ""
-    st.info("Input cleared.")
-
-if run_clicked:
-    if article.strip() == "":
+if st.button("Analyze Article"):
+    if not article.strip():
         st.warning("Please enter some text.")
-    elif len(article) > max_len:
-        st.warning("Text too long. Please shorten and try again.")
     elif summarizer is None or detector is None:
-        st.error("Model not loaded. Please refresh the page and try again.")
+        st.error("Model not loaded. Refresh and try again.")
     else:
-        # Duplicate submission prevention and cooldown
-        import hashlib, time
-        text_hash = hashlib.sha256(article.encode("utf-8")).hexdigest()
-        now = time.time()
-        if st.session_state["last_input_hash"] == text_hash:
-            st.info("You already analyzed this exact text.")
-            cooldown_left = 0
-            if st.session_state["last_submit_ts"] is not None:
-                elapsed = now - st.session_state["last_submit_ts"]
-                cooldown_left = max(0, st.session_state["cooldown_seconds"] - int(elapsed))
-            if cooldown_left > 0:
-                st.caption(f"Please wait {cooldown_left}s before re-analyzing.")
-            # Proceed anyway to allow re-run; message above informs the user.
-        st.session_state["last_input_hash"] = text_hash
-        st.session_state["last_submit_ts"] = now
         with st.spinner("Analyzing..."):
-            # Summarize
-            summary = summarizer(article, max_length=120, min_length=30, do_sample=False)[0]['summary_text']
+            # Summarize for display
+            summary = summarizer(article, max_length=120, min_length=40, do_sample=False)[0]['summary_text']
 
-            # Detect with all scores to present more realistic accuracy
-            prob_fake = None
-            prob_real = None
-            label = "UNKNOWN"
-            score = 0.0
-            all_scores = detector(article, return_all_scores=True)
-            all_scores = all_scores[0] if isinstance(all_scores, list) else all_scores
-            for item in all_scores:
-                lbl = str(item.get("label", "")).upper()
-                scr = float(item.get("score", 0.0))
-                if "FAKE" in lbl:
-                    prob_fake = scr
-                if "REAL" in lbl or "TRUE" in lbl:
-                    prob_real = scr
-            if prob_fake is None or prob_real is None:
-                result = detector(article)[0]
-                top_label = result.get("label", "").upper()
-                top_score = float(result.get("score", 0.0))
-                if "FAKE" in top_label:
-                    prob_fake = top_score
-                    prob_real = 1.0 - top_score
-                else:
-                    prob_real = top_score
-                    prob_fake = 1.0 - top_score
-            if prob_fake >= prob_real:
-                label, score = "FAKE", prob_fake
-            else:
-                label, score = "REAL", prob_real
+            # Choose text for detection: summary or full article
+            detection_text = summary if use_summary_for_detection else article
 
-        st.subheader("🧾 Summary:")
+            # Chunked detection
+            label, score, agg_scores, n_chunks = analyze_article_in_chunks(
+                detection_text, detector, max_words_per_chunk=chunk_words
+            )
+
+        st.subheader("🧾 Summary")
         st.write(summary)
 
-        st.subheader("🔍 Credibility Check:")
-        if label.lower() == "fake":
-            st.error(f"⚠️ This article appears **FAKE** with confidence {score*100:.1f}%")
-        elif label.lower() == "real":
-            st.success(f"✅ This article appears **REAL** with confidence {score*100:.1f}%")
+        st.subheader("🔍 Credibility Check")
+        if label == "FAKE":
+            st.error(f"⚠️ Appears **FAKE** with confidence {score*100:.1f}%  •  (evaluated over {n_chunks} chunk(s))")
         else:
-            st.info(f"This article's credibility is unclear. Confidence {score*100:.1f}%")
+            st.success(f"✅ Appears **REAL** with confidence {score*100:.1f}%  •  (evaluated over {n_chunks} chunk(s))")
 
-        # Show both probabilities for transparency
-        st.markdown("**Class probabilities:**")
-        st.write({"FAKE": f"{(prob_fake or 0.0)*100:.1f}%", "REAL": f"{(prob_real or 0.0)*100:.1f}%"})
+        # Show both aggregated probabilities
+        total = max(agg_scores["FAKE"] + agg_scores["REAL"], 1e-9)
+        st.markdown("**Aggregated class scores (sum across chunks):**")
+        st.write({
+            "FAKE (sum)": f"{agg_scores['FAKE']:.4f}",
+            "REAL (sum)": f"{agg_scores['REAL']:.4f}",
+            "FAKE (%)": f"{(agg_scores['FAKE']/total)*100:.1f}%",
+            "REAL (%)": f"{(agg_scores['REAL']/total)*100:.1f}%"
+        })
 
         # Prepare result payload
         timestamp = datetime.utcnow().isoformat(timespec="seconds") + "Z"
@@ -146,15 +141,16 @@ if run_clicked:
             "timestamp": timestamp,
             "prediction": label,
             "confidence": round(float(score), 4),
-            "prob_fake": round(float(prob_fake or 0.0), 4),
-            "prob_real": round(float(prob_real or 0.0), 4),
+            "prob_fake_sum": round(float(agg_scores["FAKE"]), 4),
+            "prob_real_sum": round(float(agg_scores["REAL"]), 4),
+            "chunks_evaluated": n_chunks,
+            "used_summary_for_detection": use_summary_for_detection,
             "summary": summary,
             "text_snippet": snippet,
         }
 
         # Save to history
         st.session_state["history"].append(result_payload)
-		# st.session_state["analysis_count"] += 1
 
         # Download current result (JSON)
         st.download_button(
@@ -171,14 +167,15 @@ st.subheader("🗂️ Analysis History")
 if len(st.session_state["history"]) == 0:
     st.info("No analyses yet. Run an analysis to build history.")
 else:
-    # Show concise table
     st.write([
         {
             "time": h["timestamp"],
             "prediction": h["prediction"],
             "conf%": f"{h['confidence']*100:.1f}",
-            "fake%": f"{h['prob_fake']*100:.1f}",
-            "real%": f"{h['prob_real']*100:.1f}",
+            "fake_sum": f"{h['prob_fake_sum']:.3f}",
+            "real_sum": f"{h['prob_real_sum']:.3f}",
+            "chunks": h["chunks_evaluated"],
+            "summary_det?": h["used_summary_for_detection"],
             "snippet": h["text_snippet"],
         }
         for h in st.session_state["history"]
@@ -204,8 +201,10 @@ else:
                 "timestamp",
                 "prediction",
                 "confidence",
-                "prob_fake",
-                "prob_real",
+                "prob_fake_sum",
+                "prob_real_sum",
+                "chunks_evaluated",
+                "used_summary_for_detection",
                 "summary",
                 "text_snippet",
             ],
