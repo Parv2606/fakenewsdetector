@@ -8,219 +8,107 @@ from datetime import datetime
 
 st.set_page_config(page_title="Fake News Detector", page_icon="📰")
 
-# ---------- Helpers ----------
+# Prevent CPU overload on Streamlit Cloud
+torch.set_num_threads(1)
+
 def get_device():
-    # Use GPU if available; otherwise CPU
     return 0 if torch.cuda.is_available() else -1
 
-@st.cache_resource(show_spinner=False)
+@st.cache_resource(show_spinner=True)
 def load_models():
-    try:
-        # Summarizer (fast + reliable)
-        summarizer = pipeline(
-            "summarization",
-            model="sshleifer/distilbart-cnn-12-6",
-            device=get_device()
-        )
+    summarizer = pipeline(
+        "summarization",
+        model="sshleifer/distilbart-cnn-12-6",
+        device=get_device()
+    )
 
-        # Stronger fake-news model (full BERT)
-        detector = pipeline(
-            "text-classification",
-            model="taltech-cs/fake-news-detection-bert",
-            return_all_scores=True,
-            truncation=True,
-            device=get_device()
-        )
-        return summarizer, detector
-    except Exception as e:
-        st.error("⚠️ Model loading failed. Check your internet or try again.")
-        st.write(e)
-        return None, None
+    detector = pipeline(
+        "text-classification",
+        model="taltech-cs/fake-news-detection-bert",
+        return_all_scores=True,
+        truncation=True,
+        device=get_device()
+    )
+    return summarizer, detector
 
-def word_chunks(text: str, max_words: int = 180):
-    """
-    Split long text into ~max_words chunks.
-    Keeps punctuation reasonably intact without extra libraries.
-    """
+
+def chunk_text(text, size=180):
     words = text.split()
-    for i in range(0, len(words), max_words):
-        yield " ".join(words[i:i + max_words])
+    for i in range(0, len(words), size):
+        yield " ".join(words[i:i + size])
 
-def analyze_article_in_chunks(text: str, detector, max_words_per_chunk: int = 180):
-    """
-    Run the detector on multiple chunks and aggregate scores.
-    Returns (label, confidence, {"FAKE": total, "REAL": total}, chunk_count)
-    """
+
+def detect_fake_news(text, detector, chunk_size=180):
     scores = {"FAKE": 0.0, "REAL": 0.0}
-    chunk_count = 0
+    chunks = 0
 
-    for chunk in word_chunks(text, max_words=max_words_per_chunk):
-        # Each call returns list with one element (the sample), which is list of scores per label
+    for chunk in chunk_text(text, chunk_size):
         result = detector(chunk)[0]
-        # Normalize labels and accumulate
         for item in result:
-            label = str(item["label"]).upper()
-            score = float(item["score"])
-            if "FAKE" in label:
-                scores["FAKE"] += score
-            elif "REAL" in label or "TRUE" in label:
-                scores["REAL"] += score
-        chunk_count += 1
+            lbl = item["label"].upper()
+            scr = float(item["score"])
+            if "FAKE" in lbl:
+                scores["FAKE"] += scr
+            if "REAL" in lbl or "TRUE" in lbl:
+                scores["REAL"] += scr
+        chunks += 1
 
-    if scores["FAKE"] >= scores["REAL"]:
-        final_label = "FAKE"
-        confidence = scores["FAKE"] / (scores["FAKE"] + scores["REAL"] + 1e-9)
-    else:
-        final_label = "REAL"
-        confidence = scores["REAL"] / (scores["FAKE"] + scores["REAL"] + 1e-9)
-
-    return final_label, confidence, scores, chunk_count
+    label = "FAKE" if scores["FAKE"] > scores["REAL"] else "REAL"
+    confidence = max(scores["FAKE"], scores["REAL"]) / (scores["FAKE"] + scores["REAL"] + 1e-8)
+    return label, confidence, scores, chunks
 
 
-# ---------- Load models ----------
 summarizer, detector = load_models()
 
-# ---------- UI ----------
-st.title("📰 Fake News Detector for Students")
-st.markdown("Analyze articles, assess credibility, and summarize them to prevent misinformation.")
+st.title("📰 Fake News Detector")
+st.write("Analyze news articles for credibility & get a clean summary.")
 
-# Initialize history
 if "history" not in st.session_state:
     st.session_state["history"] = []
 
-article = st.text_area("Paste a news article or paragraph:", height=220)
+text = st.text_area("Paste the article here:", height=220)
 
-# Controls
-colA, colB = st.columns(2)
-with colA:
-    use_summary_for_detection = st.checkbox("Detect on summary instead of full article", value=False)
-with colB:
-    chunk_words = st.slider("Words per chunk (for full article detection)", 120, 240, 180, 10)
+use_summary = st.checkbox("Detect using summary instead of full text", value=False)
+chunk_size = st.slider("Words per chunk for detection", 120, 240, 180)
 
-if st.button("Analyze Article"):
-    if not article.strip():
+if st.button("Analyze"):
+    if not text.strip():
         st.warning("Please enter some text.")
-    elif summarizer is None or detector is None:
-        st.error("Model not loaded. Refresh and try again.")
     else:
-        with st.spinner("Analyzing..."):
-            # Summarize for display
-            summary = summarizer(article, max_length=120, min_length=40, do_sample=False)[0]['summary_text']
+        summary = summarizer(text, max_length=120, min_length=40)[0]["summary_text"]
+        input_text = summary if use_summary else text
 
-            # Choose text for detection: summary or full article
-            detection_text = summary if use_summary_for_detection else article
-
-            # Chunked detection
-            label, score, agg_scores, n_chunks = analyze_article_in_chunks(
-                detection_text, detector, max_words_per_chunk=chunk_words
-            )
+        label, conf, scores, chunks = detect_fake_news(input_text, detector, chunk_size)
 
         st.subheader("🧾 Summary")
         st.write(summary)
 
-        st.subheader("🔍 Credibility Check")
+        st.subheader("🔍 Credibility Result")
         if label == "FAKE":
-            st.error(f"⚠️ Appears **FAKE** with confidence {score*100:.1f}%  •  (evaluated over {n_chunks} chunk(s))")
+            st.error(f"⚠️ The article appears FAKE — Confidence: {conf*100:.1f}% (Chunks analyzed: {chunks})")
         else:
-            st.success(f"✅ Appears **REAL** with confidence {score*100:.1f}%  •  (evaluated over {n_chunks} chunk(s))")
+            st.success(f"✅ The article appears REAL — Confidence: {conf*100:.1f}% (Chunks analyzed: {chunks})")
 
-        # Show both aggregated probabilities
-        total = max(agg_scores["FAKE"] + agg_scores["REAL"], 1e-9)
-        st.markdown("**Aggregated class scores (sum across chunks):**")
-        st.write({
-            "FAKE (sum)": f"{agg_scores['FAKE']:.4f}",
-            "REAL (sum)": f"{agg_scores['REAL']:.4f}",
-            "FAKE (%)": f"{(agg_scores['FAKE']/total)*100:.1f}%",
-            "REAL (%)": f"{(agg_scores['REAL']/total)*100:.1f}%"
-        })
+        st.write({"FAKE Score": scores["FAKE"], "REAL Score": scores["REAL"]})
 
-        # Prepare result payload
-        timestamp = datetime.utcnow().isoformat(timespec="seconds") + "Z"
-        snippet = (article[:200] + "…") if len(article) > 200 else article
-        result_payload = {
+        timestamp = datetime.utcnow().isoformat()
+        result = {
             "timestamp": timestamp,
-            "prediction": label,
-            "confidence": round(float(score), 4),
-            "prob_fake_sum": round(float(agg_scores["FAKE"]), 4),
-            "prob_real_sum": round(float(agg_scores["REAL"]), 4),
-            "chunks_evaluated": n_chunks,
-            "used_summary_for_detection": use_summary_for_detection,
+            "label": label,
+            "confidence": conf,
             "summary": summary,
-            "text_snippet": snippet,
+            "snippet": text[:200] + "…" if len(text) > 200 else text,
         }
+        st.session_state["history"].append(result)
 
-        # Save to history
-        st.session_state["history"].append(result_payload)
+        st.download_button("⬇️ Download Result (JSON)", json.dumps(result, indent=2), file_name="result.json")
 
-        # Download current result (JSON)
-        st.download_button(
-            label="⬇️ Download this result (JSON)",
-            data=json.dumps(result_payload, ensure_ascii=False, indent=2),
-            file_name=f"fake_news_result_{timestamp}.json",
-            mime="application/json",
-        )
-
-# History section
 st.divider()
-st.subheader("🗂️ Analysis History")
+st.subheader("History")
 
-if len(st.session_state["history"]) == 0:
-    st.info("No analyses yet. Run an analysis to build history.")
+if st.session_state["history"]:
+    st.write(st.session_state["history"])
+    if st.button("Clear history"):
+        st.session_state["history"] = []
 else:
-    st.write([
-        {
-            "time": h["timestamp"],
-            "prediction": h["prediction"],
-            "conf%": f"{h['confidence']*100:.1f}",
-            "fake_sum": f"{h['prob_fake_sum']:.3f}",
-            "real_sum": f"{h['prob_real_sum']:.3f}",
-            "chunks": h["chunks_evaluated"],
-            "summary_det?": h["used_summary_for_detection"],
-            "snippet": h["text_snippet"],
-        }
-        for h in st.session_state["history"]
-    ])
-
-    col1, col2, col3 = st.columns(3)
-
-    # Download history as JSON
-    with col1:
-        st.download_button(
-            label="⬇️ Download history (JSON)",
-            data=json.dumps(st.session_state["history"], ensure_ascii=False, indent=2),
-            file_name="fake_news_history.json",
-            mime="application/json",
-        )
-
-    # Download history as CSV
-    with col2:
-        csv_buffer = StringIO()
-        writer = csv.DictWriter(
-            csv_buffer,
-            fieldnames=[
-                "timestamp",
-                "prediction",
-                "confidence",
-                "prob_fake_sum",
-                "prob_real_sum",
-                "chunks_evaluated",
-                "used_summary_for_detection",
-                "summary",
-                "text_snippet",
-            ],
-        )
-        writer.writeheader()
-        for row in st.session_state["history"]:
-            writer.writerow(row)
-        st.download_button(
-            label="⬇️ Download history (CSV)",
-            data=csv_buffer.getvalue(),
-            file_name="fake_news_history.csv",
-            mime="text/csv",
-        )
-
-    # Clear history
-    with col3:
-        if st.button("🧹 Clear history"):
-            st.session_state["history"] = []
-            st.success("History cleared.")
+    st.info("No history yet.")
