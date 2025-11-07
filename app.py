@@ -13,17 +13,21 @@ st.set_page_config(
 torch.set_num_threads(1)
 
 @st.cache_resource(show_spinner=True)
+@st.cache_resource(show_spinner=True)
 def load_models():
     detector = pipeline(
         "text-classification",
-        model="mrm8488/bert-tiny-finetuned-fake-news",
+        model="lxyuan/distilbert-base-multilingual-cased-fake-news",
+        return_all_scores=False,
         truncation=True
     )
 
     summarizer = pipeline(
         "summarization",
-        model="sshleifer/distilbart-cnn-6-6",  # small & deploy-safe
+        model="sshleifer/distilbart-cnn-6-6",
+        truncation=True
     )
+
     return detector, summarizer
 
 detector, summarizer = load_models()
