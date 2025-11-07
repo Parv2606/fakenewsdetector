@@ -23,12 +23,14 @@ def load_models():
     )
 
     detector = pipeline(
-        "text-classification",
-        model="taltech-cs/fake-news-detection-bert",
-        return_all_scores=True,
-        truncation=True,
-        device=get_device()
-    )
+    "text-classification",
+    model="taltech-cs/fake-news-detection-bert",
+    return_all_scores=True,
+    truncation=True,
+    device=-1,  # force CPU for Streamlit Cloud
+    model_kwargs={"torch_dtype": "float32"}
+)
+
     return summarizer, detector
 
 
