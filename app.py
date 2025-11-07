@@ -6,7 +6,6 @@ import csv
 from datetime import datetime
 import pandas as pd
 
-
 # --- Streamlit Configuration and Styling ---
 st.set_page_config(
     page_title="Credibility Compass",
@@ -15,8 +14,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-
-# Customizing the look and feel
 st.markdown("""
 <style>
 .stAlert {
@@ -37,7 +34,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-
 # --- Model Loading ---
 @st.cache_resource
 def load_models():
@@ -46,31 +42,23 @@ def load_models():
     Using publicly available, robust models from Hugging Face.
     """
     try:
-        # Summarizer: BART large CNN for abstractive summarization
         summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
-        
-        # Fake news detection: widely used bert-tiny finetuned model from mrm8488
         detector = pipeline("text-classification", model="mrm8488/bert-tiny-finetuned-fake-news-detection")
-        
         return summarizer, detector
     except Exception as e:
         st.error(f"⚠️ Model Loading Error! Could not load required models. Please check your connection or try again later.")
         st.code(e, language='python')
         return None, None
 
-
 summarizer, detector = load_models()
-
 
 # --- Application Title and Description ---
 st.title("🧭 Credibility Compass: AI-Powered News Analysis")
 st.markdown("A tool for students to analyze text credibility and get fast summaries. Uses top-tier AI models for reliable results.")
 
-
 # Initialize history storage
 if "history" not in st.session_state:
     st.session_state["history"] = []
-
 
 # --- Main Input Area ---
 st.subheader("1. Paste Your Article Here")
@@ -80,12 +68,9 @@ article = st.text_area(
     placeholder="Start typing or paste a long news article..."
 )
 
-
-# Button for analysis
 col_analyze, _ = st.columns([1, 4])
 with col_analyze:
     analyze_button = st.button("🚀 Analyze Text", use_container_width=True)
-
 
 if analyze_button:
     if not article.strip():
@@ -95,7 +80,6 @@ if analyze_button:
     else:
         with st.spinner("Analyzing text and checking credibility..."):
             try:
-                # Summarize input text
                 summary = summarizer(
                     article, 
                     max_length=150, 
@@ -104,13 +88,18 @@ if analyze_button:
                     truncation=True
                 )[0]['summary_text']
 
-                # Fake news detection scores
+                # Get model output and map labels if needed
                 all_scores = detector(article, return_all_scores=True)[0]
-                prob_map = {item['label'].upper(): item['score'] for item in all_scores}
-                prob_fake = prob_map.get("FAKE", 0.0)
-                prob_real = prob_map.get("REAL", 0.0)
-
-                # Final label selection
+                # Map LABEL_0 and LABEL_1 depending on the model (for mrm8488/bert-tiny-finetuned-fake-news-detection):
+                # LABEL_0 is FAKE, LABEL_1 is REAL
+                label_map = {"LABEL_0": "FAKE", "LABEL_1": "REAL"}
+                prob_fake = prob_real = 0.0
+                for item in all_scores:
+                    lbl = label_map.get(item["label"], item["label"])
+                    if lbl == "FAKE":
+                        prob_fake = item["score"]
+                    elif lbl == "REAL":
+                        prob_real = item["score"]
                 if prob_fake > prob_real:
                     label, score = "FAKE", prob_fake
                 else:
@@ -132,7 +121,6 @@ if analyze_button:
 
                 with col_fake:
                     st.metric("Fake Probability", f"{prob_fake*100:.1f}%", delta_color="off")
-
                 with col_real:
                     st.metric("Real Probability", f"{prob_real*100:.1f}%", delta_color="off")
 
@@ -140,10 +128,8 @@ if analyze_button:
                 st.markdown("### 📜 Summary")
                 st.info(summary)
 
-                # Save to history 
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 snippet = (article[:250].replace('\n', ' ') + "...") if len(article) > 250 else article.replace('\n', ' ')
-
                 result_payload = {
                     "timestamp": timestamp,
                     "prediction": label,
@@ -154,10 +140,8 @@ if analyze_button:
                     "text_snippet": snippet,
                 }
                 st.session_state["history"].append(result_payload)
-
             except Exception as e:
                 st.error(f"An error occurred during processing: {e}")
-
 
 # --- History Section ---
 st.divider()
@@ -167,7 +151,6 @@ if len(st.session_state["history"]) == 0:
     st.info("Your analysis history will appear here once you run your first check.")
 else:
     history_reversed = st.session_state["history"][::-1]
-
     df = pd.DataFrame(history_reversed)
     df = df.rename(columns={
         "timestamp": "Time",
@@ -177,11 +160,9 @@ else:
         "prob_real": "Real %",
         "text_snippet": "Text Snippet"
     })
-
     df["Conf."] = (df["Conf."] * 100).map('{:.1f}%'.format)
     df["Fake %"] = (df["Fake %"] * 100).map('{:.1f}%'.format)
     df["Real %"] = (df["Real %"] * 100).map('{:.1f}%'.format)
-
     df_display = df[["Time", "Result", "Conf.", "Fake %", "Real %", "Text Snippet"]]
 
     with st.expander(f"**View Last {len(df_display)} Analyses**", expanded=True):
@@ -196,7 +177,6 @@ else:
         )
 
         col1, col2, col3 = st.columns(3)
-
         with col1:
             json_data = json.dumps(st.session_state["history"], ensure_ascii=False, indent=2)
             st.download_button(
@@ -206,7 +186,6 @@ else:
                 mime="application/json",
                 use_container_width=True
             )
-
         with col2:
             csv_buffer = StringIO()
             writer = csv.DictWriter(
@@ -216,7 +195,6 @@ else:
             writer.writeheader()
             for row in st.session_state["history"]:
                 writer.writerow(row)
-            
             st.download_button(
                 label="⬇️ Download All (CSV)",
                 data=csv_buffer.getvalue(),
@@ -224,7 +202,6 @@ else:
                 mime="text/csv",
                 use_container_width=True
             )
-
         with col3:
             if st.button("🗑️ Clear History", use_container_width=True):
                 st.session_state["history"] = []
