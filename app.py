@@ -6,6 +6,7 @@ import csv
 from datetime import datetime
 import pandas as pd
 
+
 # --- Streamlit Configuration and Styling ---
 st.set_page_config(
     page_title="Credibility Compass",
@@ -13,6 +14,7 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed"
 )
+
 
 # Customizing the look and feel
 st.markdown("""
@@ -57,15 +59,19 @@ def load_models():
         st.code(e, language='python')
         return None, None
 
+
 summarizer, detector = load_models()
+
 
 # --- Application Title and Description ---
 st.title("🧭 Credibility Compass: AI-Powered News Analysis")
 st.markdown("A tool for students to analyze text credibility and get fast summaries. Use better AI models for more accurate results.")
 
+
 # Initialize history storage
 if "history" not in st.session_state:
     st.session_state["history"] = []
+
 
 # --- Main Input Area ---
 st.subheader("1. Paste Your Article Here")
@@ -75,10 +81,12 @@ article = st.text_area(
     placeholder="Start typing or paste a long news article..."
 )
 
+
 # Use a container for the button for better centering/layout
 col_analyze, col_spacer = st.columns([1, 4])
 with col_analyze:
     analyze_button = st.button("🚀 Analyze Text", use_container_width=True)
+
 
 
 if analyze_button:
@@ -97,6 +105,7 @@ if analyze_button:
                     do_sample=False, 
                     truncation=True
                 )[0]['summary_text']
+
 
                 # --- Detection ---
                 # Retrieve all scores for both "FAKE" and "REAL" labels
@@ -121,6 +130,7 @@ if analyze_button:
                 # Result Metrics using columns
                 col_pred, col_fake, col_real = st.columns(3)
 
+
                 with col_pred:
                     icon = "🚨" if label == "FAKE" else "✅"
                     delta_str = f"{score*100:.1f}% Confidence"
@@ -131,8 +141,10 @@ if analyze_button:
                         delta_color="inverse" if label == "FAKE" else "normal"
                     )
 
+
                 with col_fake:
                     st.metric("Fake Probability", f"{(prob_fake)*100:.1f}%", delta_color="off")
+
 
                 with col_real:
                     st.metric("Real Probability", f"{(prob_real)*100:.1f}%", delta_color="off")
@@ -141,6 +153,7 @@ if analyze_button:
                 
                 st.markdown("### 📜 Summary")
                 st.info(summary)
+
 
                 # --- History Storage ---
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -161,15 +174,18 @@ if analyze_button:
                 st.error(f"An error occurred during processing: {e}")
 
 
+
 # --- History Section ---
 st.divider()
 st.subheader("3. Analysis History")
+
 
 if len(st.session_state["history"]) == 0:
     st.info("Your analysis history will appear here once you run your first check.")
 else:
     # Reverse history for newest first display
     history_reversed = st.session_state["history"][::-1]
+
 
     # Convert history list of dicts to a Pandas DataFrame for better visualization
     df = pd.DataFrame(history_reversed)
@@ -190,6 +206,7 @@ else:
     # Select columns to display in the table
     df_display = df[["Time", "Result", "Conf.", "Fake %", "Real %", "Text Snippet"]]
 
+
     # Use an expander to keep the UI clean
     with st.expander(f"**View Last {len(df_display)} Analyses**", expanded=True):
         st.dataframe(
@@ -202,7 +219,9 @@ else:
             }
         )
 
+
         col1, col2, col3 = st.columns(3)
+
 
         # Download history as JSON
         with col1:
@@ -214,6 +233,7 @@ else:
                 mime="application/json",
                 use_container_width=True
             )
+
 
         # Download history as CSV
         with col2:
@@ -233,6 +253,7 @@ else:
                 mime="text/csv",
                 use_container_width=True
             )
+
 
         # Clear history
         with col3:
