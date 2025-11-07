@@ -1,116 +1,123 @@
 import streamlit as st
 from transformers import pipeline
 import torch
-import json
-from io import StringIO
-import csv
 from datetime import datetime
 
-st.set_page_config(page_title="Fake News Detector", page_icon="📰")
+st.set_page_config(
+    page_title="Fake News Detector",
+    page_icon="📰",
+    layout="wide"
+)
 
-# Prevent CPU overload on Streamlit Cloud
+# Avoid CPU overload on Streamlit Cloud
 torch.set_num_threads(1)
-
-def get_device():
-    return 0 if torch.cuda.is_available() else -1
 
 @st.cache_resource(show_spinner=True)
 def load_models():
-    summarizer = pipeline(
-        "summarization",
-        model="sshleifer/distilbart-cnn-12-6",
-        device=get_device()
+    detector = pipeline(
+        "text-classification",
+        model="mrm8488/bert-tiny-finetuned-fake-news",
+        truncation=True
     )
 
-    detector = pipeline(
-    "text-classification",
-    model="taltech-cs/fake-news-detection-bert",
-    return_all_scores=True,
-    truncation=True,
-    device=-1,  # force CPU for Streamlit Cloud
-    model_kwargs={"torch_dtype": "float32"}
-)
+    summarizer = pipeline(
+        "summarization",
+        model="sshleifer/distilbart-cnn-6-6",  # small & deploy-safe
+    )
+    return detector, summarizer
 
-    return summarizer, detector
+detector, summarizer = load_models()
 
+# --- UI HEADER ---
+st.markdown("""
+<div style="text-align:center;">
+<h1>📰 Fake News Detector</h1>
+<p style="font-size:18px;">Analyze text credibility using AI-powered NLP models.</p>
+</div>
+""", unsafe_allow_html=True)
 
-def chunk_text(text, size=180):
-    words = text.split()
-    for i in range(0, len(words), size):
-        yield " ".join(words[i:i + size])
-
-
-def detect_fake_news(text, detector, chunk_size=180):
-    scores = {"FAKE": 0.0, "REAL": 0.0}
-    chunks = 0
-
-    for chunk in chunk_text(text, chunk_size):
-        result = detector(chunk)[0]
-        for item in result:
-            lbl = item["label"].upper()
-            scr = float(item["score"])
-            if "FAKE" in lbl:
-                scores["FAKE"] += scr
-            if "REAL" in lbl or "TRUE" in lbl:
-                scores["REAL"] += scr
-        chunks += 1
-
-    label = "FAKE" if scores["FAKE"] > scores["REAL"] else "REAL"
-    confidence = max(scores["FAKE"], scores["REAL"]) / (scores["FAKE"] + scores["REAL"] + 1e-8)
-    return label, confidence, scores, chunks
-
-
-summarizer, detector = load_models()
-
-st.title("📰 Fake News Detector")
-st.write("Analyze news articles for credibility & get a clean summary.")
-
+# Maintain History
 if "history" not in st.session_state:
-    st.session_state["history"] = []
+    st.session_state.history = []
 
-text = st.text_area("Paste the article here:", height=220)
 
-use_summary = st.checkbox("Detect using summary instead of full text", value=False)
-chunk_size = st.slider("Words per chunk for detection", 120, 240, 180)
+# --- INPUT AREA SECTION ---
+st.markdown("### ✍️ Enter News Article or Statement")
+text = st.text_area("Paste text here:", height=230, placeholder="Type or paste text to analyze...")
 
-if st.button("Analyze"):
-    if not text.strip():
-        st.warning("Please enter some text.")
-    else:
+col1, col2 = st.columns(2)
+use_summary = col1.checkbox("Use AI-generated summary before detection", value=False)
+show_history = col2.checkbox("Show analysis history", value=False)
+
+
+def analyze_text(text):
+    if use_summary:
         summary = summarizer(text, max_length=120, min_length=40)[0]["summary_text"]
-        input_text = summary if use_summary else text
+        processed_text = summary
+    else:
+        summary = None
+        processed_text = text
 
-        label, conf, scores, chunks = detect_fake_news(input_text, detector, chunk_size)
+    result = detector(processed_text)[0]
+    label = result["label"]
+    confidence = float(result["score"])
 
-        st.subheader("🧾 Summary")
-        st.write(summary)
+    return label, confidence, summary
 
-        st.subheader("🔍 Credibility Result")
+
+# --- PROCESS BUTTON ---
+if st.button("🚀 Analyze", use_container_width=True):
+    if not text.strip():
+        st.warning("Please enter some text before analyzing.")
+    else:
+        label, confidence, summary = analyze_text(text)
+
+        # Color-coded result box
         if label == "FAKE":
-            st.error(f"⚠️ The article appears FAKE — Confidence: {conf*100:.1f}% (Chunks analyzed: {chunks})")
+            st.markdown(f"""
+            <div style="padding:18px;border-radius:10px;border-left:8px solid #ff4b4b;background:#ffecec;">
+            <h3>⚠️ Fake News Detected</h3>
+            <p><b>Confidence:</b> {confidence*100:.2f}%</p>
+            </div>
+            """, unsafe_allow_html=True)
         else:
-            st.success(f"✅ The article appears REAL — Confidence: {conf*100:.1f}% (Chunks analyzed: {chunks})")
+            st.markdown(f"""
+            <div style="padding:18px;border-radius:10px;border-left:8px solid #32cd32;background:#eaffea;">
+            <h3>✅ Likely Real News</h3>
+            <p><b>Confidence:</b> {confidence*100:.2f}%</p>
+            </div>
+            """, unsafe_allow_html=True)
 
-        st.write({"FAKE Score": scores["FAKE"], "REAL Score": scores["REAL"]})
+        st.markdown("### 🎯 Confidence Level")
+        st.progress(confidence)
 
-        timestamp = datetime.utcnow().isoformat()
-        result = {
-            "timestamp": timestamp,
+        if summary:
+            st.markdown("### 📝 AI Summary")
+            st.info(summary)
+
+        # Save to history
+        st.session_state.history.append({
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "label": label,
-            "confidence": conf,
-            "summary": summary,
-            "snippet": text[:200] + "…" if len(text) > 200 else text,
-        }
-        st.session_state["history"].append(result)
+            "confidence": confidence,
+            "text": text if len(text) <= 300 else text[:300] + "…",
+            "summary": summary
+        })
 
-        st.download_button("⬇️ Download Result (JSON)", json.dumps(result, indent=2), file_name="result.json")
+# --- HISTORY SECTION ---
+if show_history:
+    st.markdown("---")
+    st.markdown("### 🗂️ Analysis History")
 
-st.divider()
-st.subheader("History")
+    if len(st.session_state.history) == 0:
+        st.info("No past analyses yet.")
+    else:
+        for item in reversed(st.session_state.history):
+            with st.expander(f"{item['timestamp']} — {item['label']} ({item['confidence']*100:.1f}%)"):
+                if item["summary"]:
+                    st.write("**Summary:**", item["summary"])
+                st.write("**Text Snippet:**", item["text"])
 
-if st.session_state["history"]:
-    st.write(st.session_state["history"])
-    if st.button("Clear history"):
-        st.session_state["history"] = []
-else:
-    st.info("No history yet.")
+        if st.button("🧹 Clear History"):
+            st.session_state.history = []
+            st.experimental_rerun()
